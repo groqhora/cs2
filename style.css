@@ -1,0 +1,14 @@
+:root{--ink:#f2ead3;--bg:#12181a;--accent:#ee7a45}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:'Arial Narrow',system-ui,-apple-system,'Segoe UI',sans-serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#cross{position:fixed;left:50%;top:50%;width:14px;height:14px;transform:translate(-50%,-50%);pointer-events:none}
+#cross:before,#cross:after{content:"";position:absolute;background:#7CFC9A;box-shadow:0 0 2px #000}
+#cross:before{left:6px;top:0;width:2px;height:14px}
+#cross:after{top:6px;left:0;height:2px;width:14px}
+#zone{position:fixed;left:16px;top:calc(12px + env(safe-area-inset-top,0px));font-size:26px;font-weight:700;text-shadow:0 1px 4px #000}
+#info{position:fixed;left:16px;bottom:calc(12px + env(safe-area-inset-bottom,0px));font-size:14px;line-height:1.5;text-shadow:0 1px 3px #000;opacity:.9;max-width:90vw}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:rgba(10,14,15,.85);text-align:center;padding:24px;cursor:pointer}
+#start h1{margin:0;font-size:40px}
+#start p{margin:6px 0;max-width:460px;line-height:1.5;font-size:16px}
+#start b{color:var(--accent)}
+#start button{font:inherit;padding:8px 14px;border-radius:6px;border:1px solid #556;background:#222c2e;color:var(--ink);cursor:pointer}
