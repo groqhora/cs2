@@ -10,31 +10,10 @@
   var teamSelect=$('teamSelect');
   var uploadMapBtn=$('uploadMapBtn');
   var customMapInput=$('customMapInput');
+  var start=$('start');
 
-  function mapSlug(name){
-    return String(name || '').trim().toLowerCase()
-      .replace(/\.[^.]+$/, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-  }
-
-  function mapPath(name){
-    var clean = String(name || '').trim();
-    if(!clean) return '';
-    if(/\.(glb|gltf)$/i.test(clean)) return 'maps/' + clean;
-    return 'maps/' + mapSlug(clean) + '.glb';
-  }
-
-  function fillMapSelect(){
-    mapSelect.innerHTML = '';
-    defaultMaps.forEach(function(name){
-      var opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      mapSelect.appendChild(opt);
-    });
-    mapSelect.value = defaultMaps[0];
-  }
+  var activeTeam = 'CT';
+  var mapSpawnPoints = { T: null, CT: null };
 
   function setTeamColor(team){
     var color = '#9be7c5';
@@ -43,41 +22,169 @@
     document.documentElement.style.setProperty('--accent', color);
   }
 
+  function fillMapSelect(){
+    if(!mapSelect) return;
+    mapSelect.innerHTML='';
+    defaultMaps.forEach(function(name){
+      var opt=document.createElement('option');
+      opt.value=name;
+      opt.textContent=name;
+      mapSelect.appendChild(opt);
+    });
+    mapSelect.value=defaultMaps[0];
+  }
+
+  function normalizeName(value){
+    return String(value || '').trim();
+  }
+
+  function slugify(value){
+    return normalizeName(value)
+      .toLowerCase()
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function buildMapCandidates(name){
+    var clean = normalizeName(name);
+    if(!clean) return [];
+
+    if(/\.(glb|gltf)$/i.test(clean)){
+      return ['maps/' + clean];
+    }
+
+    var slug = slugify(clean);
+    var candidates = [
+      'maps/' + slug + '.glb',
+      'maps/' + slug + '.gltf',
+      'maps/map.glb',
+      'maps/map.gltf'
+    ];
+
+    return candidates.filter(function(item, idx, arr){ return arr.indexOf(item) === idx; });
+  }
+
+  function tryLoadMapUrl(name){
+    var candidates = buildMapCandidates(name);
+    var idx = 0;
+
+    function next(){
+      if(idx >= candidates.length){
+        if($('status')) $('status').textContent = 'Map papkasida bu xarita topilmadi. Upload qiling.';
+        return;
+      }
+
+      var path = candidates[idx++];
+      fetch(path, {method:'HEAD'}).then(function(res){
+        if(res.ok){
+          loadURL(path, name);
+        } else {
+          next();
+        }
+      }).catch(function(){
+        next();
+      });
+    }
+
+    next();
+  }
+
   function loadMapFromFile(file){
     if(!file) return;
     var url = URL.createObjectURL(file);
-    var label = file.name;
-    loadURL(url, label);
-    customMapInput.value = '';
+    loadURL(url, file.name);
+    if(customMapInput) customMapInput.value = '';
   }
 
-  function tryLoadPresetMap(name){
-    var path = mapPath(name);
-    fetch(path, {method: 'HEAD'}).then(function(res){
-      if(res.ok) loadURL(path, name);
-      else $('status').textContent = 'Map papkasida bu xarita topilmadi. Iltimos, upload qiling.';
-    }).catch(function(){
-      $('status').textContent = 'Map papkasida bu xarita topilmadi. Iltimos, upload qiling.';
+  function showStartMenu(){
+    if(start) start.style.display='flex';
+  }
+
+  function hideStartMenu(){
+    if(start) start.style.display='none';
+  }
+
+  function findNamedSpawn(root, targetNames){
+    var names = targetNames.map(function(name){ return String(name).toLowerCase(); });
+    var found = null;
+
+    function walk(obj){
+      if(!obj || !obj.name) return false;
+      var n = obj.name.toLowerCase();
+      for(var i=0;i<names.length;i++){
+        var name = names[i];
+        if(n === name || n === name.replace(/_/g,' ') || n === name.replace(/_/g,'-') || n.indexOf(name) !== -1){
+          found = obj;
+          return true;
+        }
+      }
+      if(obj.children){
+        for(var i=0;i<obj.children.length;i++){
+          if(walk(obj.children[i])) return true;
+        }
+      }
+      return false;
+    }
+
+    walk(root);
+
+    if(found && found.position){
+      return found.position.clone();
+    }
+    return null;
+  }
+
+  function setSpawnFromMap(root){
+    var tSpawn = findNamedSpawn(root, ['T Spawn','TSpawn','spawn_t','t_spawn','tspawn']);
+    var ctSpawn = findNamedSpawn(root, ['CT Spawn','CTSpawn','spawn_ct','ct_spawn','ctspawn']);
+
+    mapSpawnPoints.T = tSpawn || null;
+    mapSpawnPoints.CT = ctSpawn || null;
+
+    if(!mapSpawnPoints.T && !mapSpawnPoints.CT){
+      var box = new THREE.Box3().setFromObject(root);
+      var center = box.getCenter(new THREE.Vector3());
+      mapSpawnPoints.T = new THREE.Vector3(center.x, 0, center.z + 10);
+      mapSpawnPoints.CT = new THREE.Vector3(center.x, 0, center.z - 10);
+    }
+  }
+
+  function getTeamSpawn(){
+    var point = mapSpawnPoints[activeTeam];
+    if(point) return point.clone();
+    return new THREE.Vector3(0,0,0);
+  }
+
+  if(mapSelect){
+    fillMapSelect();
+    mapSelect.addEventListener('change', function(){
+      tryLoadMapUrl(this.value);
     });
   }
 
-  mapSelect.addEventListener('change', function(){
-    tryLoadPresetMap(this.value);
-  });
+  if(teamSelect){
+    teamSelect.addEventListener('change', function(){
+      activeTeam = this.value || 'CT';
+      setTeamColor(activeTeam);
+      if(typeof resetPlayer === 'function') resetPlayer();
+    });
+    teamSelect.value = 'CT';
+    setTeamColor(activeTeam);
+  }
 
-  teamSelect.addEventListener('change', function(){
-    setTeamColor(this.value);
-    $('status').textContent = 'Team: ' + this.value + ' tanlandi';
-  });
+  if(uploadMapBtn){
+    uploadMapBtn.addEventListener('click', function(){
+      if(customMapInput) customMapInput.click();
+    });
+  }
 
-  uploadMapBtn.addEventListener('click', function(){ customMapInput.click(); });
-  customMapInput.addEventListener('change', function(){
-    var file = this.files && this.files[0];
-    if(file) loadMapFromFile(file);
-  });
-
-  fillMapSelect();
-  setTeamColor(teamSelect.value);
+  if(customMapInput){
+    customMapInput.addEventListener('change', function(){
+      var file = this.files && this.files[0];
+      if(file) loadMapFromFile(file);
+    });
+  }
 
   var scene=new THREE.Scene();scene.background=new THREE.Color(0xa9c4d6);scene.fog=new THREE.Fog(0xa9c4d6,40,200);
   var cam=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,500);cam.rotation.order='YXZ';
@@ -99,94 +206,5 @@
      [-3,-5,3,3,1.6,cc],[2,6,3,3,1.6,cc],[-25,0,4,3,2,cc],[22,4,4,3,2,cc],[-3,24,6,1,3,cc]];
     var fl=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshLambertMaterial({color:0xcdb88a}));
     fl.rotation.x=-Math.PI/2;world.add(fl);colliders.push(fl);
-    B.forEach(function(b){var m=new THREE.Mesh(new THREE.BoxGeometry(b[2],b[4],b[3]),new THREE.MeshLambertMaterial({color:b[5]}));
-      m.position.set(b[0]+b[2]/2,b[4]/2,b[1]+b[3]/2);world.add(m);colliders.push(m);
-      var e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),new THREE.LineBasicMaterial({color:0x5a4a2c}));e.position.copy(m.position);world.add(e)});
-    zones=[['A Site',-39,-39,30,21],['B Site',9,-39,30,21],['CT Spawn',-9,-39,18,21],['T Spawn',-39,18,78,22],['Mid',-9,-18,18,36],['A Long',-39,-18,30,36],['B Long',9,-18,30,36]];
-    spawn.set(0,0,34);
-  }
-  function zoneAt(x,z){if(!zones)return '';for(var i=0;i<zones.length;i++){var q=zones[i];if(x>=q[1]&&x<=q[1]+q[3]&&z>=q[2]&&z<=q[2]+q[4])return q[0]}return ''}
-
-  function clearWorld(){while(world.children.length)world.remove(world.children[0]);colliders=[];zones=null}
-  function useGLB(gltf){
-    clearWorld();var root=gltf.scene;world.add(root);
-    var box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3());
-    var big=Math.max(size.x,size.z);
-    if(big>400||big<20){var s=100/big;root.scale.setScalar(s);root.updateMatrixWorld(true);box.setFromObject(root)}
-    root.traverse(function(o){if(o.isMesh){colliders.push(o);if(o.material)o.material.side=THREE.DoubleSide}});
-    var c=box.getCenter(new THREE.Vector3());
-    var rc=new THREE.Raycaster(new THREE.Vector3(c.x,box.max.y+5,c.z),new THREE.Vector3(0,-1,0));
-    var h=rc.intersectObjects(colliders,false);
-    spawn.set(c.x,h.length?h[0].point.y:box.min.y,c.z);
-  }
-  function loadURL(url,label){
-    $('status').textContent='Xarita yuklanmoqda…';
-    new THREE.GLTFLoader().load(url,function(g){useGLB(g);$('status').textContent=label+' yuklandi.';resetPlayer();},
-     undefined,function(){if(!colliders.length){blockMap();resetPlayer()}$('status').textContent='Map topilmadi. Foydalanuvchi tanlagan map yoki upload fayli ishlatildi.'});
-  }
-
-  $('pick').addEventListener('click',function(e){e.stopPropagation();$('file').click()});
-  $('file').addEventListener('change',function(){var f=this.files[0];if(f)loadMapFromFile(f)});
-
-  var P={x:0,y:0,z:0,vy:0,yaw:0,pitch:0,ground:true,fly:false},R=0.4,EYE=1.7,keys={};
-  function resetPlayer(){P.x=spawn.x;P.y=spawn.y;P.z=spawn.z;P.vy=0;P.yaw=0;P.pitch=0}
-  var ray=new THREE.Raycaster();
-  function wallHit(x,z,dx,dz){
-    var d=new THREE.Vector3(dx,0,dz).normalize();
-    for(var hh=0.5;hh<=1.4;hh+=0.45){
-      ray.set(new THREE.Vector3(x,P.y+hh,z),d);ray.far=R+Math.hypot(dx,dz);
-      if(ray.intersectObjects(colliders,false).length)return true
-    }
-    return false
-  }
-  function groundY(x,y,z){
-    ray.set(new THREE.Vector3(x,y+0.6,z),new THREE.Vector3(0,-1,0));ray.far=100;
-    var h=ray.intersectObjects(colliders,false);return h.length?h[0].point.y:-Infinity
-  }
-
-  var locked=false,drag=false,px=0,py=0,start=$('start');
-  start.addEventListener('click',function(){start.style.display='none';try{ren.domElement.requestPointerLock()}catch(e){}});
-  document.addEventListener('pointerlockchange',function(){locked=document.pointerLockElement===ren.domElement;if(!locked&&!drag)start.style.display='flex'});
-  function look(dx,dy){P.yaw-=dx*0.0025;P.pitch=Math.max(-1.5,Math.min(1.5,P.pitch-dy*0.0025))}
-  document.addEventListener('mousemove',function(e){if(locked)look(e.movementX,e.movementY);else if(drag){look(e.clientX-px,e.clientY-py);px=e.clientX;py=e.clientY}});
-  ren.domElement.addEventListener('mousedown',function(e){if(!locked){drag=true;px=e.clientX;py=e.clientY;start.style.display='none'}else if(e.button===0)throwSmoke()});
-  document.addEventListener('mouseup',function(){drag=false});
-  document.addEventListener('keydown',function(e){keys[e.code]=true;if(e.code==='Space')e.preventDefault();
-    if(e.code==='KeyR')clearSmokes();if(e.code==='KeyF'){P.fly=!P.fly;P.vy=0}});
-  document.addEventListener('keyup',function(e){keys[e.code]=false});
-
-  var nades=[],smokes=[],ng=new THREE.SphereGeometry(0.12,10,8),nm=new THREE.MeshBasicMaterial({color:0x333333});
-  function throwSmoke(){var d=new THREE.Vector3();cam.getWorldDirection(d);
-    var m=new THREE.Mesh(ng,nm);m.position.copy(cam.position).addScaledVector(d,0.6);scene.add(m);nades.push({m:m,v:d.multiplyScalar(18)})}
-  function boom(p){var s=new THREE.Mesh(new THREE.SphereGeometry(3.4,20,14),new THREE.MeshLambertMaterial({color:0xe6e6e6,transparent:true,opacity:0.93}));
-    s.position.set(p.x,p.y+1.2,p.z);scene.add(s);smokes.push({m:s,t:0});if(smokes.length>8)scene.remove(smokes.shift().m)}
-  function clearSmokes(){smokes.forEach(function(s){scene.remove(s.m)});smokes=[]}
-
-  var last=performance.now();
-  function frame(now){requestAnimationFrame(frame);var dt=Math.min((now-last)/1000,0.05);last=now;
-    var f=(keys.KeyW?1:0)-(keys.KeyS?1:0),s=(keys.KeyD?1:0)-(keys.KeyA?1:0);
-    var sp=P.fly?12:((keys.ShiftLeft||keys.ShiftRight)?2.6:5.2),l=Math.hypot(f,s)||1,sy=Math.sin(P.yaw),cy=Math.cos(P.yaw);
-    var dx=(-sy*f+cy*s)/l*sp*dt,dz=(-cy*f-sy*s)/l*sp*dt;
-    if(P.fly){P.x+=dx;P.z+=dz;P.y+=((keys.Space?1:0)-((keys.ControlLeft||keys.ControlRight)?1:0))*10*dt}
-    else if(colliders.length){
-      if(dx&&!wallHit(P.x,P.z,dx,0))P.x+=dx;
-      if(dz&&!wallHit(P.x,P.z,0,dz))P.z+=dz;
-      if(keys.Space&&P.ground){P.vy=6.2;P.ground=false}
-      P.vy-=18*dt;P.y+=P.vy*dt;
-      var g=groundY(P.x,P.y,P.z);
-      if(P.y<=g){P.y=g;P.vy=0;P.ground=true}else if(P.ground&&P.y-g<0.4){P.y=g}else P.ground=false;
-      if(P.y<-200)resetPlayer()}
-    cam.position.set(P.x,P.y+EYE,P.z);cam.rotation.set(P.pitch,P.yaw,0);
-    for(var n=nades.length-1;n>=0;n--){var o=nades[n];o.v.y-=20*dt;
-      var from=o.m.position.clone(),step=o.v.clone().multiplyScalar(dt),len=step.length();
-      ray.set(from,step.clone().normalize());ray.far=len+0.1;var h=colliders.length?ray.intersectObjects(colliders,false):[];
-      if(h.length){boom(h[0].point.clone().addScaledVector(step.normalize(),-0.3));scene.remove(o.m);nades.splice(n,1)}
-      else o.m.position.add(step)}
-    for(var k=smokes.length-1;k>=0;k--){smokes[k].t+=dt;if(smokes[k].t>18){scene.remove(smokes[k].m);smokes.splice(k,1)}}
-    var zn=zoneAt(P.x,P.z);$('zone').textContent=zn;
-    ren.render(scene,cam)}
-  addEventListener('resize',function(){cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();ren.setSize(innerWidth,innerHeight)});
-
-  tryLoadPresetMap(defaultMaps[0]);
-  requestAnimationFrame(frame);
-})();
+    B.forEach(function(b){var m=new THREE.Mesh(new THREE.BoxGeometry(b[2],b[4],b[3]),new THREE.MeshLambertMaterial({color:b[5]}));\n      m.position.set(b[0]+b[2]/2,b[4]/2,b[1]+b[3]/2);world.add(m);colliders.push(m);\n      var e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),new THREE.LineBasicMaterial({color:0x5a4a2c}));e.position.copy(m.position);world.add(e)});\n    zones=[['A Site',-39,-39,30,21],['B Site',9,-39,30,21],['CT Spawn',-9,-39,18,21],['T Spawn',-39,18,78,22],['Mid',-9,-18,18,36],['A Long',-39,-18,30,36],['B Long',9,-18,30,36]];\n    spawn.set(0,0,34);\n    mapSpawnPoints.T = new THREE.Vector3(-30,0,30);\n    mapSpawnPoints.CT = new THREE.Vector3(30,0,30);\n  }\n\n  function zoneAt(x,z){if(!zones)return '';for(var i=0;i<zones.length;i++){var q=zones[i];if(x>=q[1]&&x<=q[1]+q[3]&&z>=q[2]&&z<=q[2]+q[4])return q[0]}return ''}\n\n  function clearWorld(){while(world.children.length)world.remove(world.children[0]);colliders=[];zones=null;mapSpawnPoints.T=null;mapSpawnPoints.CT=null}\n\n  function useGLB(gltf){\n    clearWorld();\n    var root=gltf.scene;world.add(root);\n    setSpawnFromMap(root);\n\n    var box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3());\n    var big=Math.max(size.x,size.z);\n    if(big>400||big<20){var s=100/big;root.scale.setScalar(s);root.updateMatrixWorld(true);box.setFromObject(root)}\n    root.traverse(function(o){if(o.isMesh){colliders.push(o);if(o.material)o.material.side=THREE.DoubleSide}});\n    var c=box.getCenter(new THREE.Vector3());\n    var rc=new THREE.Raycaster(new THREE.Vector3(c.x,box.max.y+5,c.z),new THREE.Vector3(0,-1,0));\n    var h=rc.intersectObjects(colliders,false);\n    spawn.set(c.x,h.length?h[0].point.y:box.min.y,c.z);\n    resetPlayer();\n  }\n\n  function loadURL(url,label){\n    if($('status')) $('status').textContent='Xarita yuklanmoqda…';\n    new THREE.GLTFLoader().load(url,function(g){\n      useGLB(g);\n      if($('status')) $('status').textContent=label + ' yuklandi.';\n      hideStartMenu();\n    }, undefined, function(){\n      if(!colliders.length){\n        blockMap();\n        resetPlayer();\n      }\n      if($('status')) $('status').textContent='Map topilmadi. Upload qiling.';\n    });\n  }\n\n  var P={x:0,y:0,z:0,vy:0,yaw:0,pitch:0,ground:true,fly:false},R=0.4,EYE=1.7,keys={};\n  function resetPlayer(){\n    var spawnPoint = getTeamSpawn();\n    P.x = spawnPoint.x;\n    P.y = spawnPoint.y;\n    P.z = spawnPoint.z;\n    P.vy = 0;\n    P.yaw = 0;\n    P.pitch = 0;\n
+
