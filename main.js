@@ -11,6 +11,8 @@
   const teamSelect = $('teamSelect');
   const uploadMapBtn = $('uploadMapBtn');
   const customMapInput = $('customMapInput');
+  const customFolderInput = $('customFolderInput');
+  const uploadFolderBtn = $('uploadFolderBtn');
   const start = $('start');
   const statusEl = $('status');
   const pickBtn = $('pick');
@@ -95,11 +97,47 @@
     next();
   }
 
-  function loadMapFromFile(file){
-    if(!file) return;
-    const url = URL.createObjectURL(file);
-    loadURL(url, file.name);
-    if(customMapInput) customMapInput.value = '';
+  function baseName(u){
+    return decodeURIComponent(String(u).split('?')[0].split('#')[0]).split('/').pop().split('\\').pop().toLowerCase();
+  }
+
+  // Bir nechta fayl (gltf + bin + rasmlar) yoki bitta glb ni oʻqiydi
+  function loadMapFiles(fileList){
+    const files = Array.prototype.slice.call(fileList || []);
+    if(!files.length) return;
+    const main = files.find((f) => /\.(glb|gltf)$/i.test(f.name));
+    if(!main){
+      if(statusEl) statusEl.textContent = '.glb yoki .gltf fayl tanlanmadi.';
+      return;
+    }
+    const table = {};
+    files.forEach((f) => { table[f.name.toLowerCase()] = URL.createObjectURL(f); });
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier((url) => table[baseName(url)] || url);
+
+    function go(){ loadURL(table[main.name.toLowerCase()], main.name, manager); }
+
+    if(/\.gltf$/i.test(main.name)){
+      main.text().then((txt) => {
+        let json = null;
+        try { json = JSON.parse(txt); } catch(e){}
+        if(json){
+          const need = []
+            .concat((json.buffers || []).map((b) => b.uri))
+            .concat((json.images || []).map((i) => i.uri))
+            .filter((u) => u && u.indexOf('data:') !== 0)
+            .map(baseName);
+          const missing = need.filter((n, i) => need.indexOf(n) === i && !table[n]);
+          if(missing.length){
+            if(statusEl) statusEl.textContent = 'Yetishmayotgan fayllar: ' + missing.slice(0, 6).join(', ') + (missing.length > 6 ? ' va yana ' + (missing.length - 6) + 'ta' : '') + '. "Upload folder" bilan butun papkani tanlang.';
+            return;
+          }
+        }
+        go();
+      });
+    } else {
+      go();
+    }
   }
 
   // Tugun nomini topadi (boʻshliq, _ va - hisobga olinmaydi). Dunyo koordinatasini qaytaradi.
@@ -119,30 +157,84 @@
     return v;
   }
 
+  // Xaritadagi haqiqiy "yer" sathini topadi: tarmoq nuqtalaridan pastga nur otib,
+  // tepasi boʻsh (tom/shift emas) joylarni yigʻadi va eng koʻp uchraydigan balandlikni tanlaydi.
+  function findGroundSpawn(box){
+    const size = box.getSize(new THREE.Vector3());
+    const cen = box.getCenter(new THREE.Vector3());
+    const down = new THREE.Vector3(0, -1, 0);
+    const up = new THREE.Vector3(0, 1, 0);
+    const N = 14;
+    const cands = [];
+
+    for(let i = 0; i < N; i++){
+      for(let j = 0; j < N; j++){
+        const x = box.min.x + size.x * (i + 0.5) / N;
+        const z = box.min.z + size.z * (j + 0.5) / N;
+        ray.set(new THREE.Vector3(x, box.max.y + 5, z), down);
+        ray.far = size.y + 10;
+        const hits = ray.intersectObjects(colliders, true);
+        for(let k = 0; k < hits.length; k++){
+          const p = hits[k].point;
+          ray.set(new THREE.Vector3(p.x, p.y + 0.1, p.z), up);
+          ray.far = 2.2;
+          if(!ray.intersectObjects(colliders, true).length) cands.push(p.clone());
+        }
+      }
+    }
+    if(!cands.length) return null;
+
+    const bins = {};
+    cands.forEach((p) => {
+      const key = Math.round(p.y * 2) / 2;
+      bins[key] = (bins[key] || 0) + 1;
+    });
+    let bestKey = null, bestCount = 0;
+    Object.keys(bins).forEach((k) => {
+      if(bins[k] > bestCount){ bestCount = bins[k]; bestKey = parseFloat(k); }
+    });
+
+    let best = null, bestD = Infinity;
+    cands.forEach((p) => {
+      if(Math.abs(p.y - bestKey) > 0.6) return;
+      const d = Math.hypot(p.x - cen.x, p.z - cen.z);
+      if(d < bestD){ bestD = d; best = p; }
+    });
+    return best;
+  }
+
+  function dropToGround(v, box){
+    ray.set(new THREE.Vector3(v.x, v.y + 1.5, v.z), new THREE.Vector3(0, -1, 0));
+    ray.far = (box.max.y - box.min.y) + 10;
+    const h = ray.intersectObjects(colliders, true);
+    if(h.length) v.y = h[0].point.y;
+  }
+
   function setSpawnFromMap(root){
     const tSpawn = findNamedSpawn(root, ['T Spawn', 'TSpawn', 'spawn_t', 't_spawn']);
     const ctSpawn = findNamedSpawn(root, ['CT Spawn', 'CTSpawn', 'spawn_ct', 'ct_spawn']);
+    const box = new THREE.Box3().setFromObject(root);
 
     mapSpawnPoints.T = tSpawn || null;
     mapSpawnPoints.CT = ctSpawn || null;
 
-    const box = new THREE.Box3().setFromObject(root);
-    const center = box.getCenter(new THREE.Vector3());
+    // Nomli nuqtalar yerga tushiriladi
+    if(mapSpawnPoints.T) dropToGround(mapSpawnPoints.T, box);
+    if(mapSpawnPoints.CT) dropToGround(mapSpawnPoints.CT, box);
 
+    // Nomli nuqta yoʻq boʻlsa, avtomatik topilgan yer ishlatiladi
     if(!mapSpawnPoints.T && !mapSpawnPoints.CT){
-      mapSpawnPoints.T = new THREE.Vector3(center.x - 5, box.max.y + 1, center.z);
-      mapSpawnPoints.CT = new THREE.Vector3(center.x + 5, box.max.y + 1, center.z);
+      const g = findGroundSpawn(box);
+      if(g){
+        mapSpawnPoints.T = g.clone();
+        mapSpawnPoints.CT = g.clone();
+      } else {
+        const c = box.getCenter(new THREE.Vector3());
+        mapSpawnPoints.T = new THREE.Vector3(c.x, box.max.y + 1, c.z);
+        mapSpawnPoints.CT = mapSpawnPoints.T.clone();
+        if(statusEl) statusEl.textContent += ' Yer sathi aniqlanmadi, F bilan uchib yuring.';
+      }
     }
-
-    // Nuqtalarni yerga tushiramiz
-    ['T', 'CT'].forEach((k) => {
-      const v = mapSpawnPoints[k];
-      if(!v) return;
-      ray.set(new THREE.Vector3(v.x, box.max.y + 5, v.z), new THREE.Vector3(0, -1, 0));
-      ray.far = (box.max.y - box.min.y) + 10;
-      const h = ray.intersectObjects(colliders, true);
-      if(h.length) v.y = h[0].point.y;
-    });
   }
 
   function getTeamSpawn(){
@@ -159,6 +251,7 @@
     P.vy = 0;
     P.yaw = 0;
     P.pitch = 0;
+    P.sx = P.x; P.sy = P.y; P.sz = P.z;
   }
 
   // --- UI hodisalari ---
@@ -188,8 +281,19 @@
 
   if(customMapInput){
     customMapInput.addEventListener('change', () => {
-      const file = customMapInput.files && customMapInput.files[0];
-      if(file) loadMapFromFile(file);
+      loadMapFiles(customMapInput.files);
+      customMapInput.value = '';
+    });
+  }
+
+  if(uploadFolderBtn && customFolderInput){
+    uploadFolderBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      customFolderInput.click();
+    });
+    customFolderInput.addEventListener('change', () => {
+      loadMapFiles(customFolderInput.files);
+      customFolderInput.value = '';
     });
   }
 
@@ -217,7 +321,7 @@
   let colliders = [];
   let zones = null;
 
-  const P = { x: 0, y: 0, z: 0, vy: 0, yaw: 0, pitch: 0, ground: true, fly: false };
+  const P = { x: 0, y: 0, z: 0, vy: 0, yaw: 0, pitch: 0, ground: true, fly: false, sx: 0, sy: 0, sz: 0 };
   const R = 0.5;
   const EYE = 1.7;
   const keys = {};
@@ -296,12 +400,19 @@
     const root = gltf.scene;
     world.add(root);
 
-    // Juda katta yoki juda kichik modelni moslash
+    // Oʻlchamni moslash: Source birligi (1 birlik = 0.0254 m), keyin zaxira moslash
     let box = new THREE.Box3().setFromObject(root);
-    const size = box.getSize(new THREE.Vector3());
-    const big = Math.max(size.x, size.z);
+    let size = box.getSize(new THREE.Vector3());
+    let big = Math.max(size.x, size.z);
+    if(big > 400){
+      root.scale.setScalar(0.0254);
+      root.updateMatrixWorld(true);
+      box = new THREE.Box3().setFromObject(root);
+      size = box.getSize(new THREE.Vector3());
+      big = Math.max(size.x, size.z);
+    }
     if(big > 400 || big < 20){
-      root.scale.setScalar(100 / big);
+      root.scale.multiplyScalar(100 / big);
     }
     root.updateMatrixWorld(true);
 
@@ -316,9 +427,9 @@
     resetPlayer();
   }
 
-  function loadURL(url, label){
+  function loadURL(url, label, manager){
     if(statusEl) statusEl.textContent = 'Xarita yuklanmoqda…';
-    new THREE.GLTFLoader().load(
+    new THREE.GLTFLoader(manager).load(
       url,
       function(gltf){
         useGLB(gltf);
@@ -346,8 +457,8 @@
   }
 
   function groundY(x, y, z){
-    ray.set(new THREE.Vector3(x, y + 1.0, z), new THREE.Vector3(0, -1, 0));
-    ray.far = 50;
+    ray.set(new THREE.Vector3(x, y + 0.7, z), new THREE.Vector3(0, -1, 0));
+    ray.far = 60;
     const h = ray.intersectObjects(colliders, true);
     return h.length ? h[0].point.y : -Infinity;
   }
@@ -498,7 +609,12 @@
         P.ground = false;
       }
 
-      if(P.y < -150) resetPlayer();
+      if(P.ground && isFinite(g)){ P.sx = P.x; P.sy = P.y; P.sz = P.z; }
+
+      // Yer ostiga tushib ketsa, oxirgi xavfsiz joyga qaytaramiz
+      if(P.y < P.sy - 15){
+        P.x = P.sx; P.y = P.sy + 0.1; P.z = P.sz; P.vy = 0;
+      }
     }
 
     cam.position.set(P.x, P.y + EYE, P.z);
